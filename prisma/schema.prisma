@@ -1,0 +1,107 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("NEON_POSTGRES_URL")
+}
+
+model User {
+  id            String         @id @default(uuid()) @db.Uuid
+  userId        String         @unique @map("user_id") @db.Uuid
+  email         String         @unique
+  passwordHash  String         @map("password_hash")
+  isVerified    Boolean        @default(false) @map("is_verified")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @default(now()) @updatedAt @map("updated_at")
+  profile       Profile?
+  summaries     Summary[]
+  subscriptions Subscription[]
+  documents     Document[]
+
+  @@map("users")
+}
+
+model Profile {
+  id                String     @id @default(uuid()) @db.Uuid
+  userId            String     @unique @map("user_id") @db.Uuid
+  fullName          String?    @map("full_name")
+  avatarUrl         String?    @map("avatar_url")
+  remainingRequests Int        @default(15) @map("remaining_requests")
+  isPro             Boolean    @default(false) @map("is_pro")
+  createdAt         DateTime   @default(now()) @map("created_at")
+  updatedAt         DateTime   @default(now()) @updatedAt @map("updated_at")
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("profiles")
+}
+
+model Summary {
+  id          String     @id @default(uuid()) @db.Uuid
+  userId      String     @map("user_id") @db.Uuid
+  inputText   String     @map("input_text")
+  summaryText String     @map("summary_text")
+  summaryType String     @map("summary_type")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("summaries")
+}
+
+model SubscriptionPlan {
+  id               String         @id @default(uuid()) @db.Uuid
+  name             String
+  description      String?
+  price            Float
+  durationDays     Int            @map("duration_days")
+  requestsPerMonth Int            @map("requests_per_month")
+  isActive         Boolean        @default(true) @map("is_active")
+  subscriptions    Subscription[]
+
+  @@map("subscription_plans")
+}
+
+model Subscription {
+  id            String           @id @default(uuid()) @db.Uuid
+  userId        String           @map("user_id") @db.Uuid
+  planId        String           @map("plan_id") @db.Uuid
+  startsAt      DateTime         @map("starts_at")
+  endsAt        DateTime         @map("ends_at")
+  status        String
+  paymentMethod String?          @map("payment_method")
+  createdAt     DateTime         @default(now()) @map("created_at")
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan          SubscriptionPlan @relation(fields: [planId], references: [id])
+  payments      Payment[]
+
+  @@map("user_subscriptions")
+}
+
+model Payment {
+  id               String         @id @default(uuid()) @db.Uuid
+  subscriptionId   String         @map("subscription_id") @db.Uuid
+  amount           Float
+  currency         String         @default("USD")
+  status           String
+  paymentGateway   String         @map("payment_gateway")
+  gatewayReference String?        @map("gateway_reference")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  subscription     Subscription   @relation(fields: [subscriptionId], references: [id])
+
+  @@map("payments")
+}
+
+model Document {
+  id        String     @id @default(uuid()) @db.Uuid
+  userId    String     @map("user_id") @db.Uuid
+  title     String
+  content   String?
+  filePath  String?    @map("file_path")
+  fileSize  Int?       @map("file_size")
+  mimeType  String?    @map("mime_type")
+  createdAt DateTime   @default(now()) @map("created_at")
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_documents")
+}

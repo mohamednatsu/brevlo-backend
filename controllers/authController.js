@@ -1,45 +1,25 @@
-const { createClient } = require('@supabase/supabase-js');
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+const { PrismaClient } = require('@prisma/client');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
 
-// Enhanced error handler
-const handleAuthError = (error) => {
-  let message = error.message;
-  let status = 400;
+const prisma = new PrismaClient();
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
-  // Map specific Supabase errors to user-friendly messages
-  if (message.includes('User already registered')) {
-    message = 'This email is already registered. Please login instead.';
-    status = 409; // Conflict
-  } else if (message.includes('Invalid login credentials')) {
-    message = 'Invalid email or password. Please try again.';
-    status = 401; // Unauthorized
-  } else if (message.includes('Email not confirmed')) {
-    message = 'Please confirm your email before logging in.';
-    status = 403; // Forbidden
-  } else if (message.includes('Email rate limit exceeded')) {
-    message = 'Too many attempts. Please try again later.';
-    status = 429; // Too Many Requests
-  }
-
-  return { message, status };
+// Helper function to generate JWT token
+const generateToken = (userId) => {
+  return jwt.sign({ id: userId }, JWT_SECRET, { expiresIn: '30d' });
 };
 
 // Get Current User
 exports.getCurrentUser = async (req, res) => {
   try {
-    const authHeader = req.headers['authorization'];
-    const accessToken = authHeader && authHeader.split(' ')[1];
+    const userId = req.user.id;
 
-    if (!accessToken) {
-      return res.status(401).json({
-        success: false,
-        error: 'Access token is required'
-      });
-    }
-
-    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
-
-    if (error) throw error;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { profile: true }
+    });
 
     if (!user) {
       return res.status(404).json({
@@ -48,71 +28,33 @@ exports.getCurrentUser = async (req, res) => {
       });
     }
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .single();
-
     res.status(200).json({
       success: true,
       user: {
         id: user.id,
+        userId: user.userId,
         email: user.email,
-        name: profile?.full_name || user.user_metadata?.name || user.email.split('@')[0],
-        avatar: profile?.avatar_url || user.user_metadata?.avatar_url || null,
-        isVerified: user.email_confirmed_at !== null,
-        remainingRequests: profile?.remaining_requests || 0
+        name: user.profile?.fullName || user.email.split('@')[0],
+        avatar: user.profile?.avatarUrl || null,
+        isVerified: user.isVerified,
+        remainingRequests: user.profile?.remainingRequests || 0,
+        is_pro: user.profile?.isPro || false
       }
     });
 
   } catch (error) {
-    const { message, status } = handleAuthError(error);
-    res.status(status).json({
+    res.status(500).json({
       success: false,
-      error: message
+      error: error.message
     });
   }
 };
 
-// Logout User
-exports.logout = async (req, res) => {
-  try {
-    // Extract the access token from the Authorization header
-    const authHeader = req.headers['authorization'];
-    const accessToken = authHeader && authHeader.split(' ')[1];
-
-    if (!accessToken) {
-      return res.status(401).json({
-        success: false,
-        error: 'Access token is required'
-      });
-    }
-
-    // Sign out from Supabase
-    const { error } = await supabase.auth.signOut(accessToken);
-    if (error) throw error;
-
-    res.status(200).json({
-      success: true,
-      message: 'Logged out successfully'
-    });
-
-  } catch (error) {
-    const { message, status } = handleAuthError(error);
-    res.status(status).json({
-      success: false,
-      error: message
-    });
-  }
-};
-
-// Register User and Return Token
+// Register User
 exports.register = async (req, res) => {
   try {
     const { email, password, name } = req.body;
 
-    // Basic validation
     if (!email || !password || !name) {
       return res.status(400).json({
         success: false,
@@ -120,77 +62,58 @@ exports.register = async (req, res) => {
       });
     }
 
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { full_name: name },
-        emailRedirectTo: `${process.env.FRONTEND_URL}/auth/confirm`
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const user = await prisma.user.create({
+      data: {
+        id: uuidv4(),
+        userId: uuidv4(),
+        email,
+        passwordHash: hashedPassword,
+        profile: {
+          create: {
+            id: uuidv4(),
+            fullName: name,
+            remainingRequests: 15,
+            isPro: false
+          }
+        }
+      },
+      select: {
+        id: true,
+        userId: true,
+        email: true,
+        isVerified: true,
+        profile: true
       }
     });
 
-    if (error) throw error;
-
-    // Create user profile in your profiles table
-    if (data.user) {
-      await supabase.from('profiles').insert({
-        id: data.user.id,
-        email: data.user.email,
-        full_name: name,
-        remaining_requests: 15, // Default free requests
-        is_pro: false // Free tier by default
-      });
-    }
+    const token = generateToken(user.id);
 
     res.status(201).json({
       success: true,
       message: 'Registration successful! Please check your email to confirm your account.',
-      user: data.user,
-      session: data.session,
-      access_token: data.session?.access_token
+      user: {
+        id: user.id,
+        userId: user.userId,
+        email: user.email,
+        isVerified: user.isVerified
+      },
+      token
     });
 
   } catch (error) {
-    const { message, status } = handleAuthError(error);
-    res.status(status).json({
-      success: false,
-      error: message
-    });
-  }
-};
-
-// Confirm Email
-exports.confirmEmail = async (req, res) => {
-  try {
-    const { token } = req.query;
-
-    if (!token) {
-      return res.status(400).json({
+    if (error.code === 'P2002') { // Unique constraint violation
+      return res.status(409).json({
         success: false,
-        error: 'Invalid confirmation token'
+        error: 'This email is already registered'
       });
     }
 
-    const { data, error } = await supabase.auth.verifyOtp({
-      token,
-      type: 'email'
-    });
-
-    if (error) throw error;
-
-    res.status(200).json({
-      success: true,
-      message: 'Email confirmed successfully!',
-      user: data.user,
-      session: data.session,
-      access_token: data.session?.access_token
-    });
-
-  } catch (error) {
-    const { message, status } = handleAuthError(error);
-    res.status(status).json({
+    console.log(error)
+    res.status(500).json({
       success: false,
-      error: message
+      error: error.message
     });
   }
 };
@@ -207,141 +130,56 @@ exports.login = async (req, res) => {
       });
     }
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
+    const user = await prisma.user.findUnique({
+      where: { email },
+      include: { profile: true }
     });
 
-    if (error) throw error;
+    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid email or password'
+      });
+    }
 
-    // Get additional profile data
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', data.user.id)
-      .single();
+    const token = generateToken(user.id);
 
     res.json({
       success: true,
       message: 'Login successful!',
       user: {
-        id: data.user.id,
-        email: data.user.email,
-        name: profile?.full_name || data.user.user_metadata?.name || data.user.email.split('@')[0],
-        avatar: profile?.avatar_url || data.user.user_metadata?.avatar_url || null,
-        isVerified: data.user.email_confirmed_at !== null,
-        remainingRequests: profile?.remaining_requests || 0,
-        is_pro: profile?.is_pro || false, // Send Pro status
+        id: user.id,
+        userId: user.userId,
+        email: user.email,
+        name: user.profile?.fullName || user.email.split('@')[0],
+        avatar: user.profile?.avatarUrl || null,
+        isVerified: user.isVerified,
+        remainingRequests: user.profile?.remainingRequests || 0,
+        is_pro: user.profile?.isPro || false
       },
-      access_token: data.session.access_token,
-      refresh_token: data.session.refresh_token,
+      token
     });
 
   } catch (error) {
-    const { message, status } = handleAuthError(error);
-    res.status(status).json({
+    res.status(500).json({
       success: false,
-      error: message,
+      error: error.message,
     });
   }
 };
 
-
-// Google OAuth Functions
-exports.googleAuth = async (req, res) => {
+// Logout User
+exports.logout = async (req, res) => {
   try {
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: `${process.env.FRONTEND_URL}/dashboard/upload`,
-        queryParams: {
-          access_type: 'offline',
-          prompt: 'consent'
-        }
-      }
-    });
-
-    if (error) throw error;
-    res.redirect(data.url);
-  } catch (error) {
-    const { message, status } = handleAuthError(error);
-    res.status(status).json({
-      success: false,
-      error: message
-    });
-  }
-}
-
-exports.googleCallback = async (req, res) => {
-  try {
-    const { code } = req.query;
-    if (!code) throw new Error('Authorization code missing');
-
-    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-    if (error) throw error;
-
-    // Check if user profile exists, create if not
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', data.user.id)
-      .single();
-
-    if (!profile) {
-      await supabase.from('profiles').insert({
-        id: data.user.id,
-        email: data.user.email,
-        full_name: data.user.user_metadata?.full_name || data.user.email.split('@')[0],
-        avatar_url: data.user.user_metadata?.avatar_url || null,
-        remaining_requests: 10
-      });
-    }
-
-    // Prepare user data for frontend
-    const userData = {
-      id: data.user.id,
-      email: data.user.email,
-      name: data.user.user_metadata?.full_name || data.user.email.split('@')[0],
-      avatar: data.user.user_metadata?.avatar_url || null,
-      isVerified: true,
-      remainingRequests: 10
-    };
-
-    // Redirect back to auth page with tokens and user data
-    const redirectUrl = new URL(`${process.env.FRONTEND_URL}/auth`);
-    redirectUrl.searchParams.set('access_token', data.session.access_token);
-    redirectUrl.searchParams.set('refresh_token', data.session.refresh_token);
-    redirectUrl.searchParams.set('user', encodeURIComponent(JSON.stringify(userData)));
-
-    res.redirect(redirectUrl.toString());
-
-  } catch (error) {
-    const { message } = handleAuthError(error);
-    res.redirect(`${process.env.FRONTEND_URL}/auth?error=${encodeURIComponent(message)}`);
-  }
-};
-
-exports.getGoogleAuthUrl = async (req, res) => {
-  try {
-    const { redirectTo = `${process.env.FRONTEND_URL}/auth/callback` } = req.query;
-
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo }
-    });
-
-    if (error) throw error;
-
-    res.json({
+    // Client-side should remove the token from storage
+    res.status(200).json({ 
       success: true,
-      url: data.url
+      message: 'Logged out successfully.'
     });
-
   } catch (error) {
-    const { message, status } = handleAuthError(error);
-    res.status(status).json({
+    res.status(500).json({
       success: false,
-      error: message
+      error: 'Logout failed'
     });
   }
 };

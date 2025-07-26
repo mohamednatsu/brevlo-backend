@@ -35,7 +35,7 @@ router.post('/summarize/text', summaryController.summarize);
 
 router.post('/save-summary', summaryController.saveSummary);
 router.post('/decrease-requests', summaryController.decreaseRequests);
-
+router.get('/user/summarizes/:id', summaryController.getUserSummaries);
 
 
 const upload2 = multer({
