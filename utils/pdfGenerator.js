@@ -1,5 +1,5 @@
-const pdf = require('html-pdf');
 const path = require('path');
+const puppeteer = require('puppeteer');
 
 async function generatePDF(summary, language = 'en', notes = []) {
     try {
