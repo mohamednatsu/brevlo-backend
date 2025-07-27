@@ -9,11 +9,11 @@ const app = express();
 app.use(morgan('dev'));
 
 const corsOptions = {
-       origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+       origin: ['http://localhost:3001', "http://localhost:3000", "https://brevlo.vercel.app"], // ✅ Replace with real frontend URL
        credentials: true,
        allowedHeaders: ['Content-Type', 'Authorization'],
        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
-}
+};
 
 app.use(cors(corsOptions))
 app.use(express.static('public')); // Serve static files
