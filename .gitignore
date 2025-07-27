@@ -1,5 +1,4 @@
 node_modules
 .env
-yt-dlp.exe
 audio.mp3
 /generated/prisma
